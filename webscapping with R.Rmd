@@ -1,0 +1,235 @@
+---
+title: "Webscaping"
+author: "Rick"
+date: '2019-01-06'
+output: html_document
+---
+## Credit to YouTuber: R4DS Online Learning Community (https://www.youtube.com/watch?v=0mvlZhYk44E)
+
+# Load libraries
+
+* Tidyverse for all the tidy packages
+* rvest to "harvest" all the data from the web
+
+```{r, message=FALSE}
+library(tidyverse) # ggplot, dplyr, tidyr, readr, purrr, tibble, stringr, forcats
+library(rvest) # interacting with html and webcontent
+library(glue) # used to combine strings in clever ways
+```
+
+## Data Sourcing
+
+we want to source NFL positional salaries to match the
+[538 article](https://fivethirtyeight.com/features/running-backs-are-finally-getting-paid-what-theyre-worth/).
+
+we dont have access to NFL salaries from ESPN, so we have to find it manually at sportrac
+
+```{r}
+url <- "https://www.x-rates.com/table/?from=USD&amount=1"
+
+read_html(url) %>%
+  html_nodes("table") %>%
+  html_table()
+```
+
+## Finding the specific table path
+* Inspect the web page to find what the path is
+
+```{r}
+read_html(url) %>%
+  html_nodes("#content > div:nth-child(1) > div > div.col2.pull-right.module.bottomMargin > div.moduleContent > table:nth-child(4)") %>%
+  html_table()
+```
+
+## Save as a dataframe
+
+* Read html from url, aim html_table() at the path and save to dataframe
+
+```{r}
+curr_rate <- read_html(url) %>%
+  html_node("#content > div:nth-child(1) > div > div.col2.pull-right.module.bottomMargin > div.moduleContent > table:nth-child(4)") %>%
+  html_table()
+
+# Take a peak at the data
+glimpse(curr_rate)
+
+# How many dataframes?
+# some number
+```
+
+
+## Building a web scrapping function
+
+```{r}
+url <- "https://www.x-rates.com/table/?from=USD&amount=1"
+
+# things we want to change "from" ("country") and "amount"
+
+base_url <- "https://www.x-rates.com/table/"
+
+currency_scrape <- function(country, amount) {
+  
+  url <- glue("https://www.x-rates.com/table/?from={country}&amount={amount}")
+  
+  read_html(url) %>%
+    html_node("#content > div:nth-child(1) > div > div.col2.pull-right.module.bottomMargin > div.moduleContent >     table:nth-child(4)") %>%
+    html_table()
+}
+
+# check
+currency_scrape("JPY", 1)
+```
+
+## Build up inputs as scaffold
+
+*currency (1)
+*countries (USD, ZAR, SGD, NZD, MYR, JPY, INR, HKD, EUR, CAD, GBP, AUD)
+
+```{r}
+# currency is 1
+currency <- 1
+
+# Countries
+countries <- c("USD", "CAD", "JPY", "EUR", "ZAR", "SGD", "NZD", "MYR", "INR", "HKD", "GBP", "AUD")
+
+scaffold <- tibble(country = list(countries),
+                   amount = currency) %>% tidyr::unnest()
+scaffold
+```
+
+## Test inputs
+
+```{r}
+currency_scrape("USD", 1)
+```
+
+## Using the scaffold to build a dataframe
+
+```{r}
+# Limit to first four rows of our scaffold dataframe
+head(scaffold, 4)
+
+# Create dataframe with map2
+tbl_data <- head(scaffold, 4) %>%
+  mutate(data = purrr::map2(country, amount, ~currency_scrape(.x, .y)))
+
+# Check the data
+tbl_data
+
+# Look at the nested dataframe contents
+tbl_data$data
+
+# Remove the NA column and merge into a continuous dataframe
+tbl_data$data %>% purrr::flatten_df()
+```
+
+## Rebuild our function
+* Goal is to move table data into data column
+* But we need to flatten this data into a combined dataframe
+* Also know that dataframes will end up nested
+
+```{r}
+
+currency_scrape <- function(country, amount){
+  
+  Sys.sleep(3)
+  
+  cat(".")
+  
+  url <- glue("https://www.x-rates.com/table/?from={country}&amount={amount}")
+  
+  read_html(url) %>%
+    html_nodes("#content > div:nth-child(1) > div > div.col2.pull-right.module.bottomMargin > div.moduleContent >     table:nth-child(4)") %>%
+    html_table() %>%
+    purrr::flatten_df() %>%
+    set_names(c("Country", "Currency", "Inv. Currency"))
+}
+
+
+# Run this. (It will take some time)
+scraped_df <- scaffold %>%
+  mutate(data = map2(country, amount, ~currency_scrape(.x, .y)))
+
+# Let's look
+scraped_df 
+```
+
+## Data cleanup
+
+```{r}
+position_group_df <- scraped_df %>%
+  unnest()
+
+position_group_df
+```
+
+## Saving the data
+
+```{r}
+saveRDS(position_group_df, file = "x-rate_currency.RDS")
+```
+
+## Arrange data for plotting
+
+```{r}
+# Make dataframe for the plot
+mean_currency_df <- position_group_df %>%
+  group_by(amount, country) %>%
+  top_n(16, Currency) %>%
+  summarize(avg_currency = mean(Currency))
+
+mean_currency_df
+```
+
+## Plot of average currency
+
+```{r}
+ggplot(mean_currency_df, aes(x = countries, y = avg_currency)) + 
+         geom_line() +
+         geom_point() +
+         ylim(0, 30)
+```
+
+## Create dataframe for original plot
+
+```{r}
+top16_currency_df <- position_group_df %>%
+  group_by(amount, country) %>%
+  top_n(16, Currency) %>%
+  ungroup()
+
+top16_currency_df
+```
+
+## Create and save the plot
+
+```{r}
+(g1 <- ggplot(top16_currency_df, aes(x = country, y = Currency)) +
+  geom_point(alpha = .3, size = 3) +
+  geom_smooth(color = "orangered",
+              se = FALSE) +
+  scale_y_continuous(limits = c(0, 30),
+                     breaks = seq(0, 30, 5),
+                     labels = c("0", "5", "10", "15", "20", "25", "$30")) +
+  labs(title = "Average Currency for Top Countries",
+       subtitle = "Top 16 Currencies",
+       y = "Average Currency Value", x = "Country",
+       caption = "\nGraphic: Rick_Ys | Data: x-rates.com"))
+
+ggsave("Avg_currency_rate.png", g1, height= 8, width = 10, units = "in", dpi = 600)
+beepr::beep(4)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
